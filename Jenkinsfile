@@ -228,93 +228,91 @@ EOF
         stage('Verify Chains') {
         // -------------------------------------------------------------------
             steps {
-                sh '''
-                    cd "${WORKDIR}"
+                // Write the verify logic to a shell script file so Groovy never
+                // parses the shell syntax (backslashes, single-quotes, etc.)
+                writeFile file: 'verify_chains.sh', text: '''#!/bin/bash
+set -euo pipefail
+PROJECT="$1"
+IMAGE="$2"
+WORKDIR="$3"
+cd "${WORKDIR}"
 
-                    # Get last TaskRun name
-                    TR_NAME=$(tkn tr list -n "${PROJECT}" --limit 1 \
-                        -o jsonpath="{.items[0].metadata.name}")
-                    echo "Last TaskRun: ${TR_NAME}"
+# Get last TaskRun name
+TR_NAME=$(tkn tr list -n "${PROJECT}" --limit 1 -o jsonpath="{.items[0].metadata.name}")
+echo "Last TaskRun: ${TR_NAME}"
 
-                    # Wait for TaskRun to fully succeed
-                    echo "Waiting for TaskRun to reach Succeeded state..."
-                    ELAPSED=0
-                    while true; do
-                        STATUS=$(kubectl get taskrun "${TR_NAME}" -n "${PROJECT}" \
-                            -o jsonpath=\'{.status.conditions[?(@.type=="Succeeded")].status}\' \
-                            2>/dev/null || true)
-                        [ "$STATUS" = "True" ] && echo "TaskRun Succeeded." && break
-                        [ "$STATUS" = "False" ] && echo "ERROR: TaskRun Failed." && exit 1
-                        [ $ELAPSED -ge 120 ] && echo "ERROR: Timed out waiting." && exit 1
-                        sleep 5; ELAPSED=$((ELAPSED+5))
-                    done
+# Wait for TaskRun to fully succeed
+echo "Waiting for TaskRun to reach Succeeded state..."
+ELAPSED=0
+while true; do
+    STATUS=$(kubectl get taskrun "${TR_NAME}" -n "${PROJECT}" \
+        -o jsonpath='{.status.conditions[?(@.type=="Succeeded")].status}' 2>/dev/null || true)
+    [ "$STATUS" = "True" ] && echo "TaskRun Succeeded." && break
+    [ "$STATUS" = "False" ] && echo "ERROR: TaskRun Failed." && exit 1
+    [ $ELAPSED -ge 120 ] && echo "ERROR: Timed out waiting." && exit 1
+    sleep 5; ELAPSED=$((ELAPSED+5))
+done
 
-                    # Get image digest from TaskRun results
-                    TR_JSON=$(kubectl get taskrun "${TR_NAME}" -n "${PROJECT}" -o json)
-                    IMAGE_DIGEST=$(echo "${TR_JSON}" \
-                        | jq -r '.status.results[] | select(.name=="IMAGE_DIGEST") | .value' \
-                        2>/dev/null || true)
-                    [ -z "$IMAGE_DIGEST" ] && IMAGE_DIGEST=$(echo "${TR_JSON}" \
-                        | jq -r '.status.taskResults[] | select(.name=="IMAGE_DIGEST") | .value' \
-                        2>/dev/null || true)
-                    echo "IMAGE_DIGEST: ${IMAGE_DIGEST}"
-                    IMAGE_BY_DIGEST="${IMAGE}@${IMAGE_DIGEST}"
+# Get image digest from TaskRun results
+TR_JSON=$(kubectl get taskrun "${TR_NAME}" -n "${PROJECT}" -o json)
+IMAGE_DIGEST=$(echo "${TR_JSON}" \
+    | jq -r '.status.results[] | select(.name=="IMAGE_DIGEST") | .value' 2>/dev/null || true)
+[ -z "$IMAGE_DIGEST" ] && IMAGE_DIGEST=$(echo "${TR_JSON}" \
+    | jq -r '.status.taskResults[] | select(.name=="IMAGE_DIGEST") | .value' 2>/dev/null || true)
+echo "IMAGE_DIGEST: ${IMAGE_DIGEST}"
+IMAGE_BY_DIGEST="${IMAGE}@${IMAGE_DIGEST}"
 
-                    # Poll for chains.tekton.dev/signed: true
-                    echo "Waiting for Chains to sign the image..."
-                    WAIT=0
-                    while true; do
-                        SIGNED=$(kubectl get taskrun "${TR_NAME}" -n "${PROJECT}" \
-                            -o jsonpath=\'{.metadata.annotations.chains\\.tekton\\.dev/signed}\' \
-                            2>/dev/null || true)
-                        [ "$SIGNED" = "true" ] && echo "Chains signed the TaskRun ✅" && break
-                        [ $WAIT -ge 180 ] && echo "ERROR: Timed out waiting for signing." && exit 1
-                        echo "  Not signed yet... (${WAIT}s)"; sleep 10; WAIT=$((WAIT+10))
-                    done
+# Poll for chains.tekton.dev/signed: true
+echo "Waiting for Chains to sign the image..."
+WAIT=0
+while true; do
+    SIGNED=$(kubectl get taskrun "${TR_NAME}" -n "${PROJECT}" \
+        -o jsonpath='{.metadata.annotations.chains\\.tekton\\.dev/signed}' 2>/dev/null || true)
+    [ "$SIGNED" = "true" ] && echo "Chains signed the TaskRun." && break
+    [ $WAIT -ge 180 ] && echo "ERROR: Timed out waiting for signing." && exit 1
+    echo "  Not signed yet... (${WAIT}s)"; sleep 10; WAIT=$((WAIT+10))
+done
 
-                    # Extract the actual signing key from Rekor REST API
-                    TR_JSON=$(kubectl get taskrun "${TR_NAME}" -n "${PROJECT}" -o json)
-                    REKOR_URL=$(echo "${TR_JSON}" \
-                        | jq -r '.metadata.annotations["chains.tekton.dev/transparency"] // empty')
-                    LOG_INDEX=$(echo "${REKOR_URL}" | sed 's/.*logIndex=\([0-9]*\).*/\1/' || true)
+# Extract the actual signing key from Rekor REST API
+TR_JSON=$(kubectl get taskrun "${TR_NAME}" -n "${PROJECT}" -o json)
+REKOR_URL=$(echo "${TR_JSON}" \
+    | jq -r '.metadata.annotations["chains.tekton.dev/transparency"] // empty')
+LOG_INDEX=$(echo "${REKOR_URL}" | cut -d= -f2)
 
-                    if [ -n "$LOG_INDEX" ]; then
-                        REKOR_KEY=$(curl -s \
-                            "https://rekor.sigstore.dev/api/v1/log/entries?logIndex=${LOG_INDEX}" \
-                            | jq -r \'.[].body\' | base64 -d \
-                            | jq -r \'.spec.signatures[0].verifier\' | base64 -d 2>/dev/null || true)
-                        if echo "${REKOR_KEY}" | grep -q "BEGIN PUBLIC KEY"; then
-                            echo "${REKOR_KEY}" > cosign.pub
-                            echo "cosign.pub updated from Rekor entry ✅"
-                        fi
-                    fi
+if [ -n "$LOG_INDEX" ]; then
+    REKOR_KEY=$(curl -s \
+        "https://rekor.sigstore.dev/api/v1/log/entries?logIndex=${LOG_INDEX}" \
+        | jq -r '.[].body' | base64 -d \
+        | jq -r '.spec.signatures[0].verifier' | base64 -d 2>/dev/null || true)
+    if echo "${REKOR_KEY}" | grep -q "BEGIN PUBLIC KEY"; then
+        echo "${REKOR_KEY}" > cosign.pub
+        echo "cosign.pub updated from Rekor entry."
+    fi
+fi
 
-                    echo "cosign.pub in use:"; cat cosign.pub
+echo "cosign.pub in use:"; cat cosign.pub
 
-                    # cosign verify-attestation
-                    echo "--- cosign verify-attestation ---"
-                    ./cosign verify-attestation \
-                        --key ./cosign.pub \
-                        "${IMAGE_BY_DIGEST}" \
-                        --type slsaprovenance && echo "Attestation verified ✅" || \
-                    ./cosign verify-attestation \
-                        --key ./cosign.pub \
-                        "${IMAGE_BY_DIGEST}" \
-                        --type slsaprovenance02 && echo "Attestation verified (v0.2) ✅"
+# cosign verify-attestation
+echo "--- cosign verify-attestation ---"
+if ./cosign verify-attestation --key ./cosign.pub "${IMAGE_BY_DIGEST}" --type slsaprovenance; then
+    echo "Attestation verified (slsaprovenance)."
+elif ./cosign verify-attestation --key ./cosign.pub "${IMAGE_BY_DIGEST}" --type slsaprovenance02; then
+    echo "Attestation verified (slsaprovenance02)."
+else
+    echo "ERROR: Attestation verification FAILED."
+    exit 1
+fi
 
-                    # Rekor log entry via REST API
-                    echo "--- rekor transparency log ---"
-                    if [ -n "$LOG_INDEX" ]; then
-                        curl -s \
-                          "https://rekor.sigstore.dev/api/v1/log/entries?logIndex=${LOG_INDEX}" \
-                          | jq -r \'.[].body\' | base64 -d | jq \'{
-                              kind,apiVersion,
-                              payloadHash:.spec.payloadHash,
-                              envelopeHash:.spec.envelopeHash
-                            }\'
-                        echo "Rekor log entry verified ✅"
-                    fi
-                '''
+# Rekor log entry via REST API
+echo "--- rekor transparency log ---"
+if [ -n "$LOG_INDEX" ]; then
+    curl -s "https://rekor.sigstore.dev/api/v1/log/entries?logIndex=${LOG_INDEX}" \
+        | jq -r '.[].body' | base64 -d \
+        | jq '{kind,apiVersion,payloadHash:.spec.payloadHash,envelopeHash:.spec.envelopeHash}'
+    echo "Rekor log entry verified."
+fi
+'''
+                sh "chmod +x verify_chains.sh && bash verify_chains.sh '${params.PROJECT}' '${params.IMAGE}' '${env.WORKDIR}'"
             }
         }
     }
