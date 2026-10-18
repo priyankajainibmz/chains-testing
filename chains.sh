@@ -391,7 +391,7 @@ verify_chains() {
   REKOR_URL=$(echo "${TR_JSON}" \
     | jq -r '.metadata.annotations["chains.tekton.dev/transparency"] // empty' 2>/dev/null) \
     || true
-  LOG_INDEX=$(echo "${REKOR_URL}" | grep -oP 'logIndex=\K[0-9]+' || true)
+  LOG_INDEX=$(echo "${REKOR_URL}" | sed 's/.*logIndex=\([0-9]*\).*/\1/' || true)
 
   if [[ -n "$LOG_INDEX" ]]; then
     local REKOR_KEY

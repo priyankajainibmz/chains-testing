@@ -276,7 +276,7 @@ EOF
                     TR_JSON=$(kubectl get taskrun "${TR_NAME}" -n "${PROJECT}" -o json)
                     REKOR_URL=$(echo "${TR_JSON}" \
                         | jq -r '.metadata.annotations["chains.tekton.dev/transparency"] // empty')
-                    LOG_INDEX=$(echo "${REKOR_URL}" | grep -oP 'logIndex=\K[0-9]+' || true)
+                    LOG_INDEX=$(echo "${REKOR_URL}" | sed 's/.*logIndex=\([0-9]*\).*/\1/' || true)
 
                     if [ -n "$LOG_INDEX" ]; then
                         REKOR_KEY=$(curl -s \
