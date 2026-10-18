@@ -34,6 +34,9 @@ pipeline {
         ARCH         = sh(script: 'uname -m | sed s/x86_64/amd64/', returnStdout: true).trim()
         WORKDIR      = "/tmp/chains-${params.PROJECT}-\$(uname -m)"
         KANIKO_IMAGE = 'gcr.io/kaniko-project/executor:v1.9.0'
+        // Extend PATH for all stages — Jenkins agent runs with a restricted PATH
+        // that may not include /usr/local/bin where oc, tkn, kubectl are installed
+        PATH         = "/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin:${env.PATH}"
     }
 
     options {
@@ -65,13 +68,21 @@ pipeline {
         // -------------------------------------------------------------------
             steps {
                 sh '''
+                    echo "PATH: $PATH"
+                    MISSING=0
                     for tool in kubectl oc tkn curl jq git file; do
-                        if ! type "$tool" >/dev/null 2>&1; then
-                            echo "ERROR: required tool '$tool' not found"
-                            exit 1
+                        if type "$tool" >/dev/null 2>&1; then
+                            echo "  ✓ $tool -> $(which $tool)"
+                        else
+                            echo "  ✗ $tool NOT FOUND — searching..."
+                            find /usr /opt /home /root -name "$tool" 2>/dev/null | head -5 || true
+                            MISSING=1
                         fi
-                        echo "  ✓ $tool"
                     done
+                    if [ $MISSING -ne 0 ]; then
+                        echo "ERROR: one or more required tools are missing. Add their paths to PATH in the Jenkinsfile environment block."
+                        exit 1
+                    fi
                     echo "All prerequisites satisfied."
                 '''
             }
