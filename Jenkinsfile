@@ -34,9 +34,10 @@ pipeline {
         ARCH         = sh(script: 'uname -m | sed s/x86_64/amd64/', returnStdout: true).trim()
         WORKDIR      = "/tmp/chains-${params.PROJECT}-\$(uname -m)"
         KANIKO_IMAGE = 'gcr.io/kaniko-project/executor:v1.9.0'
-        // Extend PATH for all stages — Jenkins agent runs with a restricted PATH
-        // that may not include /usr/local/bin where oc, tkn, kubectl are installed
-        PATH         = "/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin:${env.PATH}"
+        // ~/bin is writable by the jenkins user and prepended to PATH
+        // so tools installed there are found in all subsequent stages
+        TOOLS_DIR    = "${env.HOME}/bin"
+        PATH         = "${env.HOME}/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin:${env.PATH}"
     }
 
     options {
@@ -70,15 +71,16 @@ pipeline {
                 sh '''
                     echo "PATH: $PATH"
 
-                    # Auto-install tkn if missing — avoids blocking on agent image rebuild.
-                    # tkn release filenames use uname -m directly: x86_64, s390x, aarch64
-                    # (unlike cosign/rekor which use amd64 — do NOT convert x86_64 to amd64 here)
+                    # Auto-install tkn into ~/bin (user-writable, no sudo needed).
+                    # tkn filenames use uname -m directly: x86_64, s390x, aarch64
+                    # (NOT amd64 — do not convert)
                     if ! type tkn >/dev/null 2>&1; then
-                        echo "tkn not found — installing v0.37.0..."
+                        echo "tkn not found — installing v0.37.0 to ${TOOLS_DIR}..."
+                        mkdir -p "${TOOLS_DIR}"
                         TKN_ARCH=$(uname -m)
                         curl -fsSL "https://github.com/tektoncd/cli/releases/download/v0.37.0/tkn_0.37.0_Linux_${TKN_ARCH}.tar.gz" \
-                          | tar -xz -C /usr/local/bin tkn
-                        chmod 755 /usr/local/bin/tkn
+                          | tar -xz -C "${TOOLS_DIR}" tkn
+                        chmod 755 "${TOOLS_DIR}/tkn"
                         echo "tkn installed: $(tkn version)"
                     fi
 
