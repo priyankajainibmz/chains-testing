@@ -173,51 +173,61 @@ EOF
         stage('Configure Chains') {
         // -------------------------------------------------------------------
             steps {
-                sh '''
-                    cd "${WORKDIR}"
+                // Use withCredentials to get a temp file path for the Docker config.
+                // Requires a Jenkins "Secret file" credential named 'dockerhub-config'
+                // containing the contents of ~/.docker/config.json
+                withCredentials([file(credentialsId: 'dockerhub-config', variable: 'DOCKER_CONFIG_FILE')]) {
+                    // Write configure script to disk so Groovy never parses the
+                    // shell syntax (backslashes, single-quotes inside heredocs, etc.)
+                    writeFile file: 'configure_chains.sh', text: """#!/bin/bash
+set -euo pipefail
+cd "\${WORKDIR}"
 
-                    # Read existing public key from signing-secrets — do NOT
-                    # regenerate it on a shared cluster (controller uses in-memory key)
-                    rm -f cosign.pub
-                    if oc get secret signing-secrets -n openshift-pipelines &>/dev/null; then
-                        oc get secret signing-secrets -n openshift-pipelines \
-                            -o jsonpath=\'{.data.cosign\\.pub}\' | base64 -d > cosign.pub
-                        if [ ! -s cosign.pub ]; then
-                            echo "cosign.pub from secret is empty, will use Rekor key later"
-                        else
-                            echo "cosign.pub extracted from signing-secrets."
-                        fi
-                    else
-                        echo "signing-secrets not found — generating new key pair..."
-                        COSIGN_PASSWORD=chainstest ./cosign generate-key-pair \
-                            k8s://openshift-pipelines/signing-secrets
-                    fi
+# Read existing public key from signing-secrets — do NOT
+# regenerate it on a shared cluster (controller uses in-memory key)
+rm -f cosign.pub
+if oc get secret signing-secrets -n openshift-pipelines &>/dev/null; then
+    oc get secret signing-secrets -n openshift-pipelines \\
+        -o 'jsonpath={.data.cosign\\.pub}' | base64 -d > cosign.pub
+    if [ ! -s cosign.pub ]; then
+        echo "cosign.pub from secret is empty, will use Rekor key later"
+    else
+        echo "cosign.pub extracted from signing-secrets."
+    fi
+else
+    echo "signing-secrets not found — generating new key pair..."
+    COSIGN_PASSWORD=chainstest ./cosign generate-key-pair \\
+        k8s://openshift-pipelines/signing-secrets
+fi
 
-                    # Registry credentials
-                    oc delete secret regcred -n "${PROJECT}" --ignore-not-found
-                    oc create secret generic regcred \
-                        --from-file=.dockerconfigjson=/root/.docker/config.json \
-                        --type=kubernetes.io/dockerconfigjson \
-                        -n "${PROJECT}"
+# Registry credentials — use the file Jenkins wrote from the 'dockerhub-config' credential
+DOCKER_CONFIG_FILE="\${DOCKER_CONFIG_FILE}"
+oc delete secret regcred -n "\${PROJECT}" --ignore-not-found
+oc create secret generic regcred \\
+    --from-file=.dockerconfigjson="\${DOCKER_CONFIG_FILE}" \\
+    --type=kubernetes.io/dockerconfigjson \\
+    -n "\${PROJECT}"
 
-                    # Wait for pipeline SA (created by Tekton operator after project creation)
-                    echo "Waiting for pipeline serviceaccount..."
-                    WAIT=0
-                    until oc get serviceaccount pipeline -n "${PROJECT}" &>/dev/null; do
-                        sleep 5; WAIT=$((WAIT+5))
-                        [ $WAIT -ge 60 ] && echo "ERROR: pipeline SA not found" && exit 1
-                    done
-                    oc patch serviceaccount pipeline -n "${PROJECT}" \
-                        -p \'{"imagePullSecrets":[{"name":"regcred"}]}\'
+# Wait for pipeline SA (created by Tekton operator after project creation)
+echo "Waiting for pipeline serviceaccount..."
+WAIT=0
+until oc get serviceaccount pipeline -n "\${PROJECT}" &>/dev/null; do
+    sleep 5; WAIT=\$((WAIT+5))
+    [ \$WAIT -ge 60 ] && echo "ERROR: pipeline SA not found" && exit 1
+done
+oc patch serviceaccount pipeline -n "\${PROJECT}" \\
+    -p '{"imagePullSecrets":[{"name":"regcred"}]}'
 
-                    oc delete secret chains-docker-hub -n "${PROJECT}" --ignore-not-found
-                    oc create secret generic chains-docker-hub \
-                        --from-file=/root/.docker/config.json \
-                        -n "${PROJECT}"
+oc delete secret chains-docker-hub -n "\${PROJECT}" --ignore-not-found
+oc create secret generic chains-docker-hub \\
+    --from-file=config.json="\${DOCKER_CONFIG_FILE}" \\
+    -n "\${PROJECT}"
 
-                    oc patch configmap chains-config -n openshift-pipelines \
-                        -p=\'{"data":{"artifacts.taskrun.format":"in-toto","artifacts.taskrun.storage":"oci","transparency.enabled":"true"}}\'
-                '''
+oc patch configmap chains-config -n openshift-pipelines \\
+    -p='{"data":{"artifacts.taskrun.format":"in-toto","artifacts.taskrun.storage":"oci","transparency.enabled":"true"}}'
+"""
+                    sh 'bash configure_chains.sh'
+                }
             }
         }
 

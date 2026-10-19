@@ -217,7 +217,7 @@ chains_config() {
   fi
 
   oc delete secret regcred -n "${project}" --ignore-not-found
-  kubectl create secret generic regcred \
+  oc create secret generic regcred \
     --from-file=.dockerconfigjson=/root/.docker/config.json \
     --type=kubernetes.io/dockerconfigjson \
     -n "${project}"
@@ -241,7 +241,7 @@ chains_config() {
     -p '{"imagePullSecrets":[{"name":"regcred"}]}'
 
   oc delete secret chains-docker-hub -n "${project}" --ignore-not-found
-  kubectl create secret generic chains-docker-hub \
+  oc create secret generic chains-docker-hub \
     --from-file=/root/.docker/config.json \
     -n "${project}"
 
