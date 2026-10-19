@@ -69,18 +69,30 @@ pipeline {
             steps {
                 sh '''
                     echo "PATH: $PATH"
+
+                    # Auto-install tkn if missing — avoids blocking on agent image rebuild
+                    if ! type tkn >/dev/null 2>&1; then
+                        echo "tkn not found — installing v0.37.0..."
+                        ARCH=$(uname -m)
+                        [ "$ARCH" = "x86_64" ] && ARCH="amd64"
+                        curl -fsSL "https://github.com/tektoncd/cli/releases/download/v0.37.0/tkn_0.37.0_Linux_${ARCH}.tar.gz" \
+                          | tar -xz -C /usr/local/bin tkn
+                        chmod 755 /usr/local/bin/tkn
+                        echo "tkn installed: $(tkn version)"
+                    fi
+
+                    # Verify all required tools are present
                     MISSING=0
                     for tool in kubectl oc tkn curl jq git file; do
                         if type "$tool" >/dev/null 2>&1; then
                             echo "  ✓ $tool -> $(which $tool)"
                         else
-                            echo "  ✗ $tool NOT FOUND — searching..."
-                            find /usr /opt /home /root -name "$tool" 2>/dev/null | head -5 || true
+                            echo "  ✗ $tool NOT FOUND"
                             MISSING=1
                         fi
                     done
                     if [ $MISSING -ne 0 ]; then
-                        echo "ERROR: one or more required tools are missing. Add their paths to PATH in the Jenkinsfile environment block."
+                        echo "ERROR: one or more required tools are missing."
                         exit 1
                     fi
                     echo "All prerequisites satisfied."
