@@ -70,12 +70,13 @@ pipeline {
                 sh '''
                     echo "PATH: $PATH"
 
-                    # Auto-install tkn if missing — avoids blocking on agent image rebuild
+                    # Auto-install tkn if missing — avoids blocking on agent image rebuild.
+                    # tkn release filenames use uname -m directly: x86_64, s390x, aarch64
+                    # (unlike cosign/rekor which use amd64 — do NOT convert x86_64 to amd64 here)
                     if ! type tkn >/dev/null 2>&1; then
                         echo "tkn not found — installing v0.37.0..."
-                        ARCH=$(uname -m)
-                        [ "$ARCH" = "x86_64" ] && ARCH="amd64"
-                        curl -fsSL "https://github.com/tektoncd/cli/releases/download/v0.37.0/tkn_0.37.0_Linux_${ARCH}.tar.gz" \
+                        TKN_ARCH=$(uname -m)
+                        curl -fsSL "https://github.com/tektoncd/cli/releases/download/v0.37.0/tkn_0.37.0_Linux_${TKN_ARCH}.tar.gz" \
                           | tar -xz -C /usr/local/bin tkn
                         chmod 755 /usr/local/bin/tkn
                         echo "tkn installed: $(tkn version)"
