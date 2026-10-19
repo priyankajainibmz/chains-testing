@@ -194,6 +194,8 @@ if [ "\${SECRET_DATA}" = "{}" ] || [ -z "\${SECRET_DATA}" ]; then
     echo "Restarting Chains controller to pick up new key..."
     oc rollout restart deployment/tekton-chains-controller -n openshift-pipelines
     oc rollout status deployment/tekton-chains-controller -n openshift-pipelines --timeout=120s
+    echo "Waiting 15s for controller reconciler to initialise with new key..."
+    sleep 15
 fi
 # Now extract the public key (must exist after generate-key-pair)
 oc get secret signing-secrets -n openshift-pipelines \\
@@ -230,6 +232,8 @@ oc create secret generic chains-docker-hub \\
 
 oc patch configmap chains-config -n openshift-pipelines \\
     -p='{"data":{"artifacts.taskrun.format":"in-toto","artifacts.taskrun.storage":"oci","transparency.enabled":"true"}}'
+echo "Waiting 10s for Chains controller to pick up configmap changes..."
+sleep 10
 """
                     sh 'bash configure_chains.sh'
                 }
@@ -313,6 +317,21 @@ while true; do
     [ $WAIT -ge 180 ] && echo "ERROR: Timed out waiting for signing." && exit 1
     echo "  Not signed yet... (${WAIT}s)"; sleep 10; WAIT=$((WAIT+10))
 done
+
+# Confirm an attestation actually exists in the OCI registry.
+# If the Chains controller had no signing key, it marks signed=true but stores nothing.
+echo "Checking attestation exists in OCI registry..."
+ATT_CHECK=$(./cosign download attestation "${IMAGE_BY_DIGEST}" 2>&1 || true)
+if echo "${ATT_CHECK}" | grep -qi "error\|no attestation\|not found"; then
+    echo "ERROR: No attestation found in OCI registry for ${IMAGE_BY_DIGEST}"
+    echo "The Chains controller likely had no signing key when it processed this TaskRun."
+    echo "cosign output: ${ATT_CHECK}"
+    echo ""
+    echo "Check controller logs:"
+    oc logs -n openshift-pipelines -l app=tekton-chains-controller --tail=20 || true
+    exit 1
+fi
+echo "Attestation found in OCI registry."
 
 # Extract the actual signing key from Rekor REST API
 TR_JSON=$(oc get taskrun "${TR_NAME}" -n "${PROJECT}" -o json)
