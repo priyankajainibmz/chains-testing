@@ -183,21 +183,26 @@ EOF
 set -euo pipefail
 cd "\${WORKDIR}"
 
-# Read existing public key from signing-secrets — do NOT
-# regenerate it on a shared cluster (controller uses in-memory key)
+# Check signing-secrets — generate key pair if secret is missing OR has no data
 rm -f cosign.pub
-if oc get secret signing-secrets -n openshift-pipelines &>/dev/null; then
-    oc get secret signing-secrets -n openshift-pipelines \\
-        -o 'jsonpath={.data.cosign\\.pub}' | base64 -d > cosign.pub
-    if [ ! -s cosign.pub ]; then
-        echo "cosign.pub from secret is empty, will use Rekor key later"
-    else
-        echo "cosign.pub extracted from signing-secrets."
-    fi
-else
-    echo "signing-secrets not found — generating new key pair..."
-    COSIGN_PASSWORD=chainstest ./cosign generate-key-pair \\
+SECRET_DATA=$(oc get secret signing-secrets -n openshift-pipelines \
+    -o jsonpath='{.data}' 2>/dev/null || echo "")
+if [ "\${SECRET_DATA}" = "{}" ] || [ -z "\${SECRET_DATA}" ]; then
+    echo "signing-secrets is empty or missing — generating new cosign key pair..."
+    COSIGN_PASSWORD="" ./cosign generate-key-pair \\
         k8s://openshift-pipelines/signing-secrets
+    echo "Restarting Chains controller to pick up new key..."
+    oc rollout restart deployment/tekton-chains-controller -n openshift-pipelines
+    oc rollout status deployment/tekton-chains-controller -n openshift-pipelines --timeout=120s
+fi
+# Now extract the public key (must exist after generate-key-pair)
+oc get secret signing-secrets -n openshift-pipelines \\
+    -o 'jsonpath={.data.cosign\\.pub}' | base64 -d > cosign.pub
+if [ ! -s cosign.pub ]; then
+    echo "ERROR: cosign.pub still empty after key generation — cannot continue."
+    exit 1
+else
+    echo "cosign.pub extracted from signing-secrets."
 fi
 
 # Registry credentials — use the file Jenkins wrote from the 'dockerhub-config' credential
