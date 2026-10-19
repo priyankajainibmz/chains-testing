@@ -32,7 +32,7 @@ pipeline {
     environment {
         OCP_CREDS    = credentials('ocp-credentials')    // OCP_CREDS_USR / OCP_CREDS_PSW
         ARCH         = sh(script: 'uname -m | sed s/x86_64/amd64/', returnStdout: true).trim()
-        WORKDIR      = "/tmp/chains-${params.PROJECT}-" + sh(script: 'uname -m', returnStdout: true).trim()
+        WORKDIR      = sh(script: "echo /tmp/chains-${params.PROJECT}-\$(uname -m)", returnStdout: true).trim()
         KANIKO_IMAGE = 'gcr.io/kaniko-project/executor:v1.9.0'
         // ~/bin is writable by the jenkins user and prepended to PATH
         // so tools installed there are found in all subsequent stages
