@@ -86,7 +86,7 @@ pipeline {
 
                     # Verify all required tools are present
                     MISSING=0
-                    for tool in kubectl oc tkn curl jq git file; do
+                    for tool in oc tkn curl jq git file; do
                         if type "$tool" >/dev/null 2>&1; then
                             echo "  ✓ $tool -> $(which $tool)"
                         else
@@ -195,7 +195,7 @@ EOF
 
                     # Registry credentials
                     oc delete secret regcred -n "${PROJECT}" --ignore-not-found
-                    kubectl create secret generic regcred \
+                    oc create secret generic regcred \
                         --from-file=.dockerconfigjson=/root/.docker/config.json \
                         --type=kubernetes.io/dockerconfigjson \
                         -n "${PROJECT}"
@@ -211,7 +211,7 @@ EOF
                         -p \'{"imagePullSecrets":[{"name":"regcred"}]}\'
 
                     oc delete secret chains-docker-hub -n "${PROJECT}" --ignore-not-found
-                    kubectl create secret generic chains-docker-hub \
+                    oc create secret generic chains-docker-hub \
                         --from-file=/root/.docker/config.json \
                         -n "${PROJECT}"
 
@@ -271,7 +271,7 @@ echo "Last TaskRun: ${TR_NAME}"
 echo "Waiting for TaskRun to reach Succeeded state..."
 ELAPSED=0
 while true; do
-    STATUS=$(kubectl get taskrun "${TR_NAME}" -n "${PROJECT}" \
+    STATUS=$(oc get taskrun "${TR_NAME}" -n "${PROJECT}" \
         -o jsonpath='{.status.conditions[?(@.type=="Succeeded")].status}' 2>/dev/null || true)
     [ "$STATUS" = "True" ] && echo "TaskRun Succeeded." && break
     [ "$STATUS" = "False" ] && echo "ERROR: TaskRun Failed." && exit 1
@@ -280,7 +280,7 @@ while true; do
 done
 
 # Get image digest from TaskRun results
-TR_JSON=$(kubectl get taskrun "${TR_NAME}" -n "${PROJECT}" -o json)
+TR_JSON=$(oc get taskrun "${TR_NAME}" -n "${PROJECT}" -o json)
 IMAGE_DIGEST=$(echo "${TR_JSON}" \
     | jq -r '.status.results[] | select(.name=="IMAGE_DIGEST") | .value' 2>/dev/null || true)
 [ -z "$IMAGE_DIGEST" ] && IMAGE_DIGEST=$(echo "${TR_JSON}" \
@@ -292,7 +292,7 @@ IMAGE_BY_DIGEST="${IMAGE}@${IMAGE_DIGEST}"
 echo "Waiting for Chains to sign the image..."
 WAIT=0
 while true; do
-    SIGNED=$(kubectl get taskrun "${TR_NAME}" -n "${PROJECT}" \
+    SIGNED=$(oc get taskrun "${TR_NAME}" -n "${PROJECT}" \
         -o jsonpath='{.metadata.annotations.chains\\.tekton\\.dev/signed}' 2>/dev/null || true)
     [ "$SIGNED" = "true" ] && echo "Chains signed the TaskRun." && break
     [ $WAIT -ge 180 ] && echo "ERROR: Timed out waiting for signing." && exit 1
@@ -300,7 +300,7 @@ while true; do
 done
 
 # Extract the actual signing key from Rekor REST API
-TR_JSON=$(kubectl get taskrun "${TR_NAME}" -n "${PROJECT}" -o json)
+TR_JSON=$(oc get taskrun "${TR_NAME}" -n "${PROJECT}" -o json)
 REKOR_URL=$(echo "${TR_JSON}" \
     | jq -r '.metadata.annotations["chains.tekton.dev/transparency"] // empty')
 LOG_INDEX=$(echo "${REKOR_URL}" | cut -d= -f2)
