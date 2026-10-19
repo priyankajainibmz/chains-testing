@@ -314,19 +314,68 @@ TR_JSON=$(oc get taskrun "${TR_NAME}" -n "${PROJECT}" -o json)
 REKOR_URL=$(echo "${TR_JSON}" \
     | jq -r '.metadata.annotations["chains.tekton.dev/transparency"] // empty')
 LOG_INDEX=$(echo "${REKOR_URL}" | cut -d= -f2)
+echo "Rekor transparency URL: ${REKOR_URL:-<none>}"
+echo "Log index: ${LOG_INDEX:-<none>}"
 
 if [ -n "$LOG_INDEX" ]; then
-    REKOR_KEY=$(curl -s \
+    echo "Fetching Rekor entry from rekor.sigstore.dev..."
+    # Separate stderr so verbose/error output does not corrupt the JSON
+    REKOR_JSON=$(curl -fsSL \
         "https://rekor.sigstore.dev/api/v1/log/entries?logIndex=${LOG_INDEX}" \
-        | jq -r '.[].body' | base64 -d \
-        | jq -r '.spec.signatures[0].verifier' | base64 -d 2>/dev/null || true)
-    if echo "${REKOR_KEY}" | grep -q "BEGIN PUBLIC KEY"; then
-        echo "${REKOR_KEY}" > cosign.pub
-        echo "cosign.pub updated from Rekor entry."
+        2>/tmp/rekor_curl_err || true)
+    if [ -z "$REKOR_JSON" ]; then
+        echo "WARNING: Empty/failed response from Rekor."
+        echo "curl error: $(cat /tmp/rekor_curl_err)"
+    else
+        echo "Rekor response (first 300 chars): $(echo "${REKOR_JSON}" | head -c 300)"
+        REKOR_KEY=$(echo "${REKOR_JSON}" \
+            | jq -r '.[].body' 2>/dev/null | base64 -d 2>/dev/null \
+            | jq -r '.spec.signatures[0].verifier' 2>/dev/null | base64 -d 2>/dev/null || true)
+        if echo "${REKOR_KEY}" | grep -q "BEGIN PUBLIC KEY"; then
+            echo "${REKOR_KEY}" > cosign.pub
+            echo "cosign.pub updated from Rekor entry."
+        else
+            echo "WARNING: Could not extract public key from Rekor response (unexpected format)."
+        fi
+    fi
+else
+    echo "WARNING: No Rekor transparency annotation found on TaskRun."
+fi
+
+# If cosign.pub is still empty, extract the signing cert from the OCI attestation directly.
+# cosign download attestation embeds the signing cert in the DSSE envelope.
+if [ ! -s cosign.pub ]; then
+    echo "cosign.pub is empty — attempting to extract signing cert from OCI attestation..."
+    ATT_JSON=$(./cosign download attestation "${IMAGE_BY_DIGEST}" 2>/dev/null | head -1 || true)
+    if [ -n "$ATT_JSON" ]; then
+        # The DSSE envelope payload has the cert in the signatures[].cert field (base64 PEM)
+        CERT=$(echo "${ATT_JSON}" | jq -r '.signatures[0].cert // empty' 2>/dev/null || true)
+        if [ -n "$CERT" ]; then
+            echo "${CERT}" | base64 -d > signing.crt 2>/dev/null || echo "${CERT}" > signing.crt
+            echo "Extracted signing cert from OCI attestation."
+            # Extract public key from cert
+            openssl x509 -pubkey -noout -in signing.crt > cosign.pub 2>/dev/null || true
+            if [ -s cosign.pub ]; then
+                echo "cosign.pub extracted from signing cert via openssl."
+            fi
+        fi
     fi
 fi
 
 echo "cosign.pub in use:"; cat cosign.pub
+
+if [ ! -s cosign.pub ]; then
+    echo "ERROR: cosign.pub is empty — cannot verify attestation without a public key."
+    echo "Possible causes:"
+    echo "  1. rekor.sigstore.dev is not reachable from this Jenkins agent"
+    echo "  2. signing-secrets in the cluster has no data (shared cluster key rotation)"
+    echo "  3. The OCI attestation does not embed a cert (key-based signing was used)"
+    echo ""
+    echo "TaskRun annotations for debugging:"
+    oc get taskrun "${TR_NAME}" -n "${PROJECT}" \
+        -o jsonpath='{.metadata.annotations}' | jq . || true
+    exit 1
+fi
 
 # cosign verify-attestation
 echo "--- cosign verify-attestation ---"
