@@ -185,7 +185,7 @@ cd "\${WORKDIR}"
 
 # Check signing-secrets — generate key pair if secret is missing OR has no data
 rm -f cosign.pub
-SECRET_DATA=$(oc get secret signing-secrets -n openshift-pipelines \
+SECRET_DATA=\$(oc get secret signing-secrets -n openshift-pipelines \\
     -o jsonpath='{.data}' 2>/dev/null || echo "")
 if [ "\${SECRET_DATA}" = "{}" ] || [ -z "\${SECRET_DATA}" ]; then
     echo "signing-secrets is empty or missing — generating new cosign key pair..."
